@@ -17,28 +17,6 @@
 
 package org.strongswan.android.logic;
 
-import java.io.File;
-import java.net.Inet4Address;
-import java.net.Inet6Address;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import java.security.PrivateKey;
-import java.security.cert.CertificateEncodingException;
-import java.security.cert.X509Certificate;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-
-import org.strongswan.android.data.VpnProfile;
-import org.strongswan.android.data.VpnProfileDataSource;
-import org.strongswan.android.data.VpnType.VpnTypeFeature;
-import org.strongswan.android.logic.VpnStateService.ErrorState;
-import org.strongswan.android.logic.VpnStateService.State;
-import org.strongswan.android.logic.imc.ImcState;
-import org.strongswan.android.logic.imc.RemediationInstruction;
-import org.strongswan.android.ui.MainActivity;
-import org.strongswan.android.utils.SettingsWriter;
-
 import android.annotation.TargetApi;
 import android.app.PendingIntent;
 import android.app.Service;
@@ -53,13 +31,38 @@ import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.security.KeyChain;
 import android.security.KeyChainException;
+import android.support.v7.app.NotificationCompat;
 import android.system.OsConstants;
 import android.util.Log;
+
+import org.strongswan.android.R;
+import org.strongswan.android.data.VpnProfile;
+import org.strongswan.android.data.VpnProfileDataSource;
+import org.strongswan.android.data.VpnType.VpnTypeFeature;
+import org.strongswan.android.logic.VpnStateService.ErrorState;
+import org.strongswan.android.logic.VpnStateService.State;
+import org.strongswan.android.logic.imc.ImcState;
+import org.strongswan.android.logic.imc.RemediationInstruction;
+import org.strongswan.android.ui.MainActivity;
+import org.strongswan.android.utils.SettingsWriter;
+
+import java.io.File;
+import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.security.PrivateKey;
+import java.security.cert.CertificateEncodingException;
+import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 public class CharonVpnService extends VpnService implements Runnable
 {
 	private static final String TAG = CharonVpnService.class.getSimpleName();
 	public static final String LOG_FILE = "charon.log";
+	public static final int VPN_STATE_NOTIFICATION_ID = 1;
 
 	private String mLogFile;
 	private VpnProfileDataSource mDataSource;
@@ -223,6 +226,7 @@ public class CharonVpnService extends VpnService implements Runnable
 						BuilderAdapter builder = new BuilderAdapter(mCurrentProfile.getName(), mCurrentProfile.getSplitTunneling());
 						if (initializeCharon(builder, mLogFile, mCurrentProfile.getVpnType().has(VpnTypeFeature.BYOD)))
 						{
+							addNotification();
 							Log.i(TAG, "charon started");
 							SettingsWriter writer = new SettingsWriter();
 							writer.setValue("global.language", Locale.getDefault().getLanguage());
@@ -268,8 +272,30 @@ public class CharonVpnService extends VpnService implements Runnable
 				deinitializeCharon();
 				Log.i(TAG, "charon stopped");
 				mCurrentProfile = null;
+				removeNotification();
 			}
 		}
+	}
+
+	/**
+	 * Add a permanent notification while we are connected to avoid the service getting killed by
+	 * the system when low on memory.
+	 */
+	private void addNotification()
+	{
+		android.support.v4.app.NotificationCompat.Builder builder = new NotificationCompat.Builder(this)
+			.setContentTitle("strongSwan VPN")
+			.setContentText("Connected to " + mCurrentProfile.getName())
+			.setSmallIcon(R.drawable.ic_launcher);
+		startForeground(VPN_STATE_NOTIFICATION_ID, builder.build());
+	}
+
+	/**
+	 * Remove the permanent notification.
+	 */
+	private void removeNotification()
+	{
+		stopForeground(true);
 	}
 
 	/**
