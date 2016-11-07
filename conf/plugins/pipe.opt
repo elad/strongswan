@@ -1,0 +1,2 @@
+charon.plugins.pipe.path = /tmp/strongswan.pipe
+	Unix domain socket path.

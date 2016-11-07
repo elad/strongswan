@@ -1,7 +1,9 @@
 /*
  * Copyright (C) 2013 Tobias Brunner
- * Copyright (C) 2008 Martin Willi
  * Hochschule fuer Technik Rapperswil
+ *
+ * Copyright (C) 2010 Martin Willi
+ * Copyright (C) 2010 revosec AG
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -14,104 +16,79 @@
  * for more details.
  */
 
+#include "pipe_plugin.h"
+
 #include <daemon.h>
-#include <utils/debug.h>
 #include <plugins/plugin_feature.h>
 
-#include "attr_sql_plugin.h"
-#include "attr_sql_provider.h"
+#include "pipe_provider.h"
 
-typedef struct private_attr_sql_plugin_t private_attr_sql_plugin_t;
+typedef struct private_pipe_plugin_t private_pipe_plugin_t;
 
 /**
- * private data of attr_sql plugin
+ * private data of pipe plugin
  */
-struct private_attr_sql_plugin_t {
+struct private_pipe_plugin_t {
 
 	/**
 	 * implements plugin interface
 	 */
-	attr_sql_plugin_t public;
+	pipe_plugin_t public;
 
 	/**
-	 * database connection instance
+	 * Attribute provider
 	 */
-	database_t *db;
-
-	/**
-	 * configuration attributes
-	 */
-	attr_sql_provider_t *attribute;
+	pipe_provider_t *provider;
 };
 
 METHOD(plugin_t, get_name, char*,
-	private_attr_sql_plugin_t *this)
+	private_pipe_plugin_t *this)
 {
-	return "attr-sql";
+	return "pipe";
 }
 
 /**
- * Connect to database
+ * Register listener
  */
-static bool open_database(private_attr_sql_plugin_t *this,
-						  plugin_feature_t *feature, bool reg, void *cb_data)
+static bool plugin_cb(private_pipe_plugin_t *this,
+					  plugin_feature_t *feature, bool reg, void *cb_data)
 {
 	if (reg)
 	{
-		char *uri;
-
-		uri = lib->settings->get_str(lib->settings,
-								"%s.plugins.attr-sql.database", NULL, lib->ns);
-		if (!uri)
-		{
-			DBG1(DBG_CFG, "attr-sql plugin: database URI not set");
-			return FALSE;
-		}
-
-		this->db = lib->db->create(lib->db, uri);
-		if (!this->db)
-		{
-			DBG1(DBG_CFG, "attr-sql plugin failed to connect to database");
-			return FALSE;
-		}
-		this->attribute = attr_sql_provider_create(this->db);
-		charon->attributes->add_provider(charon->attributes,
-										 &this->attribute->provider);
+		this->provider = pipe_provider_create();
+		charon->attributes->add_provider(charon->attributes, &this->provider->provider);
 	}
 	else
 	{
-		charon->attributes->remove_provider(charon->attributes,
-											&this->attribute->provider);
-		this->attribute->destroy(this->attribute);
-		this->db->destroy(this->db);
+		charon->attributes->remove_provider(charon->attributes, &this->provider->provider);
+		this->provider->destroy(this->provider);
 	}
 	return TRUE;
 }
 
 METHOD(plugin_t, get_features, int,
-	private_attr_sql_plugin_t *this, plugin_feature_t *features[])
+	private_pipe_plugin_t *this, plugin_feature_t *features[])
 {
 	static plugin_feature_t f[] = {
-		PLUGIN_CALLBACK((plugin_feature_callback_t)open_database, NULL),
-			PLUGIN_PROVIDE(CUSTOM, "attr-sql"),
-				PLUGIN_DEPENDS(DATABASE, DB_ANY),
+		PLUGIN_CALLBACK((plugin_feature_callback_t)plugin_cb, NULL),
+			PLUGIN_PROVIDE(CUSTOM, "pipe")
 	};
 	*features = f;
 	return countof(f);
 }
 
 METHOD(plugin_t, destroy, void,
-	private_attr_sql_plugin_t *this)
+	private_pipe_plugin_t *this)
 {
 	free(this);
 }
 
-/*
- * see header file
+/**
+ * Plugin constructor.
  */
-plugin_t *attr_sql_plugin_create()
+plugin_t *pipe_plugin_create()
 {
-	private_attr_sql_plugin_t *this;
+	private_pipe_plugin_t *this;
 
 	INIT(this,
 		.public = {
@@ -122,8 +99,6 @@ plugin_t *attr_sql_plugin_create()
 			},
 		},
 	);
-	lib->settings->add_fallback(lib->settings, "%s.plugins.attr-sql",
-								"libhydra.plugins.attr-sql", lib->ns);
 
 	return &this->public.plugin;
 }

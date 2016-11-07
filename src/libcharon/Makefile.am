@@ -485,6 +485,13 @@ if MONOLITHIC
 endif
 endif
 
+if USE_PIPE
+  SUBDIRS += plugins/pipe
+if MONOLITHIC
+  libcharon_la_LIBADD += plugins/pipe/libstrongswan-pipe.la
+endif
+endif
+
 if USE_OSX_ATTR
   SUBDIRS += plugins/osx_attr
 if MONOLITHIC

@@ -76,6 +76,7 @@ plugins = \
 	plugins/openssl.opt \
 	plugins/osx-attr.opt \
 	plugins/p-cscf.opt \
+	plugins/pipe.opt \
 	plugins/pkcs11.opt \
 	plugins/radattr.opt \
 	plugins/random.opt \

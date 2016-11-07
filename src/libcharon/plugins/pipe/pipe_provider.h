@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2008 Martin Willi
- * Hochschule fuer Technik Rapperswil
+ * Copyright (C) 2010 Martin Willi
+ * Copyright (C) 2010 revosec AG
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -14,37 +14,39 @@
  */
 
 /**
- * @defgroup attr_sql_provider attr_sql_provider
- * @{ @ingroup attr_sql
+ * @defgroup pipe_provider pipe_provider
+ * @{ @ingroup pipe
  */
 
-#ifndef ATTR_SQL_PROVIDER_H_
-#define ATTR_SQL_PROVIDER_H_
+#ifndef PIPE_PROVIDER_H_
+#define PIPE_PROVIDER_H_
+
+typedef struct pipe_provider_t pipe_provider_t;
 
 #include <attributes/attribute_provider.h>
-#include <database/database.h>
-
-typedef struct attr_sql_provider_t attr_sql_provider_t;
 
 /**
- * SQL database based IKEv2 cfg attribute provider.
+ * DHCP based attribute provider.
  */
-struct attr_sql_provider_t {
+struct pipe_provider_t {
 
 	/**
-	 * Implements attribute provider interface
+	 * Implements attribute_provier_t interface.
 	 */
 	attribute_provider_t provider;
 
 	/**
-	 * Destroy a attr_sql_provider instance.
+	 * Destroy a pipe_provider_t.
 	 */
-	void (*destroy)(attr_sql_provider_t *this);
+	void (*destroy)(pipe_provider_t *this);
 };
 
 /**
- * Create a attr_sql_provider instance.
+ * Create a pipe_provider instance.
+ *
+ * @param socket		socket to use for DHCP communication
+ * @return				provider instance
  */
-attr_sql_provider_t *attr_sql_provider_create(database_t *db);
+pipe_provider_t *pipe_provider_create();
 
-#endif /** ATTR_SQL_PROVIDER_H_ @}*/
+#endif /** PIPE_PROVIDER_H_ @}*/

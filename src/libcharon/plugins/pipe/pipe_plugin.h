@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2008 Martin Willi
- * Hochschule fuer Technik Rapperswil
+ * Copyright (C) 2010 Martin Willi
+ * Copyright (C) 2010 revosec AG
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -14,24 +14,24 @@
  */
 
 /**
- * @defgroup attr_sql attr_sql
+ * @defgroup dhcp dhcp
  * @ingroup cplugins
  *
- * @defgroup attr_sql_plugin attr_sql_plugin
- * @{ @ingroup attr_sql
+ * @defgroup dhcp_plugin dhcp_plugin
+ * @{ @ingroup dhcp
  */
 
-#ifndef ATTR_SQL_PLUGIN_H_
-#define ATTR_SQL_PLUGIN_H_
+#ifndef PIPE_PLUGIN_H_
+#define PIPE_PLUGIN_H_
 
 #include <plugins/plugin.h>
 
-typedef struct attr_sql_plugin_t attr_sql_plugin_t;
+typedef struct pipe_plugin_t pipe_plugin_t;
 
 /**
- * SQL database attribute configuration plugin
+ * DHCP based attribute provider plugin.
  */
-struct attr_sql_plugin_t {
+struct pipe_plugin_t {
 
 	/**
 	 * implements plugin interface
@@ -39,4 +39,4 @@ struct attr_sql_plugin_t {
 	plugin_t plugin;
 };
 
-#endif /** ATTR_SQL_PLUGIN_H_ @}*/
+#endif /** PIPE_PLUGIN_H_ @}*/

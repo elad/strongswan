@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2008 Martin Willi
- * Hochschule fuer Technik Rapperswil
+ * Copyright (C) 2010 Martin Willi
+ * Copyright (C) 2010 revosec AG
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -13,441 +13,230 @@
  * for more details.
  */
 
-#include <time.h>
+#include "pipe_provider.h"
 
-#include <utils/debug.h>
 #include <library.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
-#include "attr_sql_provider.h"
-
-typedef struct private_attr_sql_provider_t private_attr_sql_provider_t;
+typedef struct private_pipe_provider_t private_pipe_provider_t;
 
 /**
- * private data of attr_sql_provider
+ * Private data of an pipe_provider_t object.
  */
-struct private_attr_sql_provider_t {
+struct private_pipe_provider_t {
+	/**
+	 * Public pipe_provider_t interface.
+	 */
+	pipe_provider_t public;
 
 	/**
-	 * public functions
+	 * Unix domain socket path
 	 */
-	attr_sql_provider_t public;
-
-	/**
-	 * database connection
-	 */
-	database_t *db;
-
-	/**
-	 * whether to record lease history in lease table
-	 */
-	bool history;
+	char *path;
 };
 
 /**
- * lookup/insert an identity
+ * Entry for an added attribute
  */
-static u_int get_identity(private_attr_sql_provider_t *this, ike_sa_t *ike_sa)
+typedef struct {
+	configuration_attribute_type_t type;
+	chunk_t data;
+} attribute_entry_t;
+
+static char *send_and_receive(private_pipe_provider_t *this, char *msg)
 {
-	identification_t *id;
-	enumerator_t *e;
-	u_int row;
+	int sock, len;
+	struct sockaddr_un sun;
+	char *res;
 
-	id = ike_sa->get_other_eap_id(ike_sa);
+	sock = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (sock == -1)
+	{
+		DBG1(DBG_NET, "could not create Unix domain socket: %s", strerror(errno));
+		return NULL;
+	}
 
-	this->db->transaction(this->db, TRUE);
-	/* look for peer identity in the identities table */
-	e = this->db->query(this->db,
-						"SELECT id FROM identities WHERE type = ? AND data = ?",
-						DB_INT, id->get_type(id), DB_BLOB, id->get_encoding(id),
-						DB_UINT);
-	if (e && e->enumerate(e, &row))
+	memset(&sun, 0, sizeof(sun));
+	sun.sun_family = AF_UNIX;
+	strcpy(sun.sun_path, this->path);
+	len = strlen(sun.sun_path) + sizeof(sun.sun_family);
+	if (connect(sock, (struct sockaddr *)&sun, len) == -1)
 	{
-		e->destroy(e);
-		this->db->commit(this->db);
-		return row;
+		DBG1(DBG_NET, "could not connect to Unix domain socket at %s: %s", this->path, strerror(errno));
+		return NULL;
 	}
-	DESTROY_IF(e);
-	/* not found, insert new one */
-	if (this->db->execute(this->db, &row,
-				  "INSERT INTO identities (type, data) VALUES (?, ?)",
-				  DB_INT, id->get_type(id), DB_BLOB, id->get_encoding(id)) == 1)
+
+	if (send(sock, msg, strlen(msg), 0) == -1)
 	{
-		this->db->commit(this->db);
-		return row;
+		DBG1(DBG_NET, "could not communicate with Unix domain socket at %s: %s", this->path, strerror(errno));
+		return NULL;
 	}
-	this->db->rollback(this->db);
-	return 0;
+
+	close(sock);
+
+	asprintf(&res, "RESPONSE");
+
+	return res;
 }
 
-/**
- * Lookup an attribute pool by name
- */
-static u_int get_attr_pool(private_attr_sql_provider_t *this, char *name)
+static host_t *acquire(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *requested)
 {
-	enumerator_t *e;
-	u_int row = 0;
+	char *proto = NULL;
+	char *msg = NULL;
+	char *res = NULL;
 
-	e = this->db->query(this->db,
-						"SELECT id FROM attribute_pools WHERE name = ?",
-						DB_TEXT, name, DB_UINT);
-	if (e)
-	{
-		e->enumerate(e, &row);
-	}
-	DESTROY_IF(e);
-
-	return row;
-}
-
-/**
- * Lookup pool by name and address family
- */
-static u_int get_pool(private_attr_sql_provider_t *this, char *name, int family,
-					  u_int *timeout)
-{
-	enumerator_t *e;
-	chunk_t start;
-	u_int pool;
-
-	e = this->db->query(this->db,
-						"SELECT id, start, timeout FROM pools WHERE name = ?",
-						DB_TEXT, name, DB_UINT, DB_BLOB, DB_UINT);
-	if (e && e->enumerate(e, &pool, &start, timeout))
-	{
-		if ((family == AF_INET  && start.len == 4) ||
-			(family == AF_INET6 && start.len == 16))
-		{
-			e->destroy(e);
-			return pool;
-		}
-	}
-	DESTROY_IF(e);
-	return 0;
-}
-
-/**
- * Look up an existing lease
- */
-static host_t* check_lease(private_attr_sql_provider_t *this, char *name,
-						   u_int pool, u_int identity)
-{
-	while (TRUE)
-	{
-		u_int id;
-		chunk_t address;
-		enumerator_t *e;
-		time_t now = time(NULL);
-
-		e = this->db->query(this->db,
-				"SELECT id, address FROM addresses "
-				"WHERE pool = ? AND identity = ? AND released != 0 LIMIT 1",
-				DB_UINT, pool, DB_UINT, identity, DB_UINT, DB_BLOB);
-		if (!e || !e->enumerate(e, &id, &address))
-		{
-			DESTROY_IF(e);
+	switch (requested->get_family(requested)) {
+		case AF_INET:
+			proto = "IPv4";
 			break;
-		}
-		address = chunk_clonea(address);
-		e->destroy(e);
-
-		if (this->db->execute(this->db, NULL,
-				"UPDATE addresses SET acquired = ?, released = 0 "
-				"WHERE id = ? AND identity = ? AND released != 0",
-				DB_UINT, now, DB_UINT, id, DB_UINT, identity) > 0)
-		{
-			host_t *host;
-
-			host = host_create_from_chunk(AF_UNSPEC, address, 0);
-			if (host)
-			{
-				DBG1(DBG_CFG, "acquired existing lease for address %H in"
-					 " pool '%s'", host, name);
-				return host;
-			}
-		}
-	}
-	return NULL;
-}
-
-/**
- * We check for unallocated addresses or expired leases. First we select an
- * address as a candidate, but double check later on if it is still available
- * during the update operation. This allows us to work without locking.
- */
-static host_t* get_lease(private_attr_sql_provider_t *this, char *name,
-						 u_int pool, u_int timeout, u_int identity)
-{
-	while (TRUE)
-	{
-		u_int id;
-		chunk_t address;
-		enumerator_t *e;
-		time_t now = time(NULL);
-		int hits;
-
-		if (timeout)
-		{
-			/* check for an expired lease */
-			e = this->db->query(this->db,
-				"SELECT id, address FROM addresses "
-				"WHERE pool = ? AND released != 0 AND released < ? LIMIT 1",
-				DB_UINT, pool, DB_UINT, now - timeout, DB_UINT, DB_BLOB);
-		}
-		else
-		{
-			/* with static leases, check for an unallocated address */
-			e = this->db->query(this->db,
-				"SELECT id, address FROM addresses "
-				"WHERE pool = ? AND identity = 0 LIMIT 1",
-				DB_UINT, pool, DB_UINT, DB_BLOB);
-
-		}
-
-		if (!e || !e->enumerate(e, &id, &address))
-		{
-			DESTROY_IF(e);
+		case AF_INET6:
+			proto = "IPv6";
 			break;
-		}
-		address = chunk_clonea(address);
-		e->destroy(e);
-
-		if (timeout)
-		{
-			hits = this->db->execute(this->db, NULL,
-						"UPDATE addresses SET "
-						"acquired = ?, released = 0, identity = ? "
-						"WHERE id = ? AND released != 0 AND released < ?",
-						DB_UINT, now, DB_UINT, identity,
-						DB_UINT, id, DB_UINT, now - timeout);
-		}
-		else
-		{
-			hits = this->db->execute(this->db, NULL,
-						"UPDATE addresses SET "
-						"acquired = ?, released = 0, identity = ? "
-						"WHERE id = ? AND identity = 0",
-						DB_UINT, now, DB_UINT, identity, DB_UINT, id);
-		}
-		if (hits > 0)
-		{
-			host_t *host;
-
-			host = host_create_from_chunk(AF_UNSPEC, address, 0);
-			if (host)
-			{
-				DBG1(DBG_CFG, "acquired new lease for address %H in pool '%s'",
-					 host, name);
-				return host;
-			}
-		}
+		default:
+			return NULL;
 	}
-	DBG1(DBG_CFG, "no available address found in pool '%s'", name);
-	return NULL;
+
+	if (asprintf(&msg, "ACQUIRE %Y %s\n", ike_sa->get_other_eap_id(ike_sa), proto) == -1)
+	{
+		DBG1(DBG_ENC, "could not create message for Unix domain socket: %s", strerror(errno));
+		return NULL;
+	}
+
+	res = send_and_receive(this, msg);
+	free(msg);
+	if (res == NULL)
+	{
+		DBG1(DBG_NET, "could not communicate over Unix domain socket");
+		return NULL;
+	}
+
+	free(res);
+
+	return host_create_from_string("2a0a:4b00:1234::3", 0);
 }
 
 METHOD(attribute_provider_t, acquire_address, host_t*,
-	private_attr_sql_provider_t *this, linked_list_t *pools, ike_sa_t *ike_sa,
-	host_t *requested)
+	private_pipe_provider_t *this, linked_list_t *pools,
+	ike_sa_t *ike_sa, host_t *requested)
 {
 	enumerator_t *enumerator;
-	host_t *address = NULL;
-	u_int identity, pool, timeout;
-	char *name;
-	int family;
+	char *pool;
+	host_t *vip = NULL;
+	identification_t *id = ike_sa->get_other_eap_id(ike_sa);
 
-	identity = get_identity(this, ike_sa);
-	if (identity)
-	{
-		family = requested->get_family(requested);
-		/* check for an existing lease in all pools */
-		enumerator = pools->create_enumerator(pools);
-		while (enumerator->enumerate(enumerator, &name))
-		{
-			pool = get_pool(this, name, family, &timeout);
-			if (pool)
-			{
-				address = check_lease(this, name, pool, identity);
-				if (address)
-				{
-					break;
-				}
-			}
-		}
-		enumerator->destroy(enumerator);
-
-		if (!address)
-		{
-			/* get an unallocated address or expired lease */
-			enumerator = pools->create_enumerator(pools);
-			while (enumerator->enumerate(enumerator, &name))
-			{
-				pool = get_pool(this, name, family, &timeout);
-				if (pool)
-				{
-					address = get_lease(this, name, pool, timeout, identity);
-					if (address)
-					{
-						break;
-					}
-				}
-			}
-			enumerator->destroy(enumerator);
-		}
-	}
-	return address;
-}
-
-METHOD(attribute_provider_t, release_address, bool,
-	private_attr_sql_provider_t *this, linked_list_t *pools, host_t *address,
-	ike_sa_t *ike_sa)
-{
-	enumerator_t *enumerator;
-	u_int pool, timeout;
-	time_t now = time(NULL);
-	bool found = FALSE;
-	char *name;
-	int family;
-
-	family = address->get_family(address);
 	enumerator = pools->create_enumerator(pools);
-	while (enumerator->enumerate(enumerator, &name))
+	while (enumerator->enumerate(enumerator, &pool))
 	{
-		pool = get_pool(this, name, family, &timeout);
-		if (!pool)
+		if (!streq(pool, "pipe"))
 		{
 			continue;
 		}
-		if (this->db->execute(this->db, NULL,
-				"UPDATE addresses SET released = ? WHERE "
-				"pool = ? AND address = ?", DB_UINT, time(NULL),
-				DB_UINT, pool, DB_BLOB, address->get_address(address)) > 0)
+
+		vip = acquire(this, ike_sa, requested);
+		if (vip != NULL)
 		{
-			if (this->history)
-			{
-				this->db->execute(this->db, NULL,
-					"INSERT INTO leases (address, identity, acquired, released)"
-					" SELECT id, identity, acquired, ? FROM addresses "
-					" WHERE pool = ? AND address = ?",
-					DB_UINT, now, DB_UINT, pool,
-					DB_BLOB, address->get_address(address));
-			}
+			break;
+		}
+
+		break;
+	}
+	enumerator->destroy(enumerator);
+	return vip;
+}
+
+METHOD(attribute_provider_t, release_address, bool,
+	private_pipe_provider_t *this, linked_list_t *pools,
+	host_t *address, ike_sa_t *ike_sa)
+{
+	enumerator_t *enumerator;
+	//identification_t *id;
+	bool found = FALSE;
+	char *pool;
+
+	DBG1(DBG_CFG, "pipe: release: enter");
+
+	//id = ike_sa->get_other_eap_id(ike_sa);
+	enumerator = pools->create_enumerator(pools);
+	while (enumerator->enumerate(enumerator, &pool))
+	{
+		if (!streq(pool, "pipe"))
+		{
+			continue;
+		}
+		DBG1(DBG_CFG, "pipe: release: communicate");
+		/* TODO: socket comm */
+		if (TRUE/* TODO: address acquired from pipe */)
+		{
+			/* TODO: socket comm */
 			found = TRUE;
 			break;
 		}
 	}
 	enumerator->destroy(enumerator);
-
+	DBG1(DBG_CFG, "pipe: release: leave");
 	return found;
 }
 
-METHOD(attribute_provider_t, create_attribute_enumerator, enumerator_t*,
-	private_attr_sql_provider_t *this, linked_list_t *pools, ike_sa_t *ike_sa,
-	linked_list_t *vips)
+static linked_list_t *get_attr(private_pipe_provider_t *this, ike_sa_t *ike_sa)
 {
-	enumerator_t *attr_enumerator = NULL;
+	char *msg = NULL;
+	char *res = NULL;
+	char *tmp = NULL;
 
-	if (vips->get_count(vips))
+	if (asprintf(&msg, "ATTR %Y\n", ike_sa->get_other_eap_id(ike_sa)) == -1)
 	{
-		enumerator_t *pool_enumerator;
-		u_int count;
-		char *name;
-
-		/* in a first step check for attributes that match name and id */
-		if (ike_sa)
-		{
-			u_int identity = get_identity(this, ike_sa);
-
-			pool_enumerator = pools->create_enumerator(pools);
-			while (pool_enumerator->enumerate(pool_enumerator, &name))
-			{
-				u_int attr_pool = get_attr_pool(this, name);
-				if (!attr_pool)
-				{
-					continue;
-				}
-
-				attr_enumerator = this->db->query(this->db,
-								"SELECT count(*) FROM attributes "
-								"WHERE pool = ? AND identity = ?",
-								DB_UINT, attr_pool, DB_UINT, identity, DB_UINT);
-
-				if (attr_enumerator &&
-					attr_enumerator->enumerate(attr_enumerator, &count) &&
-					count != 0)
-				{
-					attr_enumerator->destroy(attr_enumerator);
-					attr_enumerator = this->db->query(this->db,
-								"SELECT type, value FROM attributes "
-								"WHERE pool = ? AND identity = ?", DB_UINT,
-								attr_pool, DB_UINT, identity, DB_INT, DB_BLOB);
-					break;
-				}
-				DESTROY_IF(attr_enumerator);
-				attr_enumerator = NULL;
-			}
-			pool_enumerator->destroy(pool_enumerator);
-		}
-
-		/* in a second step check for attributes that match name */
-		if (!attr_enumerator)
-		{
-			pool_enumerator = pools->create_enumerator(pools);
-			while (pool_enumerator->enumerate(pool_enumerator, &name))
-			{
-				u_int attr_pool = get_attr_pool(this, name);
-				if (!attr_pool)
-				{
-					continue;
-				}
-
-				attr_enumerator = this->db->query(this->db,
-									"SELECT count(*) FROM attributes "
-									"WHERE pool = ? AND identity = 0",
-									DB_UINT, attr_pool, DB_UINT);
-
-				if (attr_enumerator &&
-					attr_enumerator->enumerate(attr_enumerator, &count) &&
-					count != 0)
-				{
-					attr_enumerator->destroy(attr_enumerator);
-					attr_enumerator = this->db->query(this->db,
-									"SELECT type, value FROM attributes "
-									"WHERE pool = ? AND identity = 0",
-									DB_UINT, attr_pool, DB_INT, DB_BLOB);
-					break;
-				}
-				DESTROY_IF(attr_enumerator);
-				attr_enumerator = NULL;
-			}
-			pool_enumerator->destroy(pool_enumerator);
-		}
-
-		/* lastly try to find global attributes */
-		if (!attr_enumerator)
-		{
-			attr_enumerator = this->db->query(this->db,
-									"SELECT type, value FROM attributes "
-									"WHERE pool = 0 AND identity = 0",
-									DB_INT, DB_BLOB);
-		}
+		DBG1(DBG_ENC, "could not create message for Unix domain socket: %s", strerror(errno));
+		return NULL;
 	}
 
-	return (attr_enumerator ? attr_enumerator : enumerator_create_empty());
+	res = send_and_receive(this, msg);
+	free(msg);
+	if (res == NULL)
+	{
+		DBG1(DBG_NET, "could not communicate over Unix domain socket");
+		return NULL;
+	}
+
+	free(res);
+
+	linked_list_t *attributes = linked_list_create();
+
+	host_t *dns = host_create_from_string("2a0a:4b00:1234::1", 0);
+	attribute_entry_t *entry;
+	INIT(entry,
+		.type = INTERNAL_IP6_DNS,
+		.data = dns->get_address(dns),
+	);
+	attributes->insert_last(attributes, entry);
+
+	return attributes;
 }
 
-METHOD(attr_sql_provider_t, destroy, void,
-	private_attr_sql_provider_t *this)
+METHOD(attribute_provider_t, create_attribute_enumerator, enumerator_t*,
+	private_pipe_provider_t *this, linked_list_t *pools, ike_sa_t *ike_sa,
+	linked_list_t *vips)
+{
+
+	linked_list_t *attributes = get_attr(this, ike_sa);
+	return attributes ? attributes->create_enumerator(attributes) : NULL;
+}
+
+METHOD(pipe_provider_t, destroy, void, private_pipe_provider_t *this)
 {
 	free(this);
 }
 
-/*
- * see header file
+/**
+ * See header
  */
-attr_sql_provider_t *attr_sql_provider_create(database_t *db)
+pipe_provider_t *pipe_provider_create()
 {
-	private_attr_sql_provider_t *this;
-	time_t now = time(NULL);
+	private_pipe_provider_t *this;
 
 	INIT(this,
 		.public = {
@@ -458,21 +247,15 @@ attr_sql_provider_t *attr_sql_provider_create(database_t *db)
 			},
 			.destroy = _destroy,
 		},
-		.db = db,
-		.history = lib->settings->get_bool(lib->settings,
-							"%s.plugins.attr-sql.lease_history", TRUE, lib->ns),
+		.path = lib->settings->get_str(lib->settings, "%s.plugins.pipe.path", NULL, lib->ns),
 	);
 
-	/* close any "online" leases in the case we crashed */
-	if (this->history)
+	if (this->path == NULL)
 	{
-		this->db->execute(this->db, NULL,
-					"INSERT INTO leases (address, identity, acquired, released)"
-					" SELECT id, identity, acquired, ? FROM addresses "
-					" WHERE released = 0", DB_UINT, now);
+		DBG1(DBG_CFG, "configured Unix domain socket path invalid");
+		destroy(this);
+		return NULL;
 	}
-	this->db->execute(this->db, NULL,
-					  "UPDATE addresses SET released = ? WHERE released = 0",
-					  DB_UINT, now);
+
 	return &this->public;
 }
