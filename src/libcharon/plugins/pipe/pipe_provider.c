@@ -23,6 +23,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#define	RECV_BUFSIZE	(1024)
+
 typedef struct private_pipe_provider_t private_pipe_provider_t;
 
 /**
@@ -48,17 +50,16 @@ typedef struct {
 	chunk_t data;
 } attribute_entry_t;
 
-static char *send_and_receive(private_pipe_provider_t *this, char *msg)
+static int send_and_receive(private_pipe_provider_t *this, char *msg, char **res)
 {
 	int sock, len;
 	struct sockaddr_un sun;
-	char *res;
 
 	sock = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (sock == -1)
 	{
-		DBG1(DBG_NET, "could not create Unix domain socket: %s", strerror(errno));
-		return NULL;
+		DBG1(DBG_NET, "pipe: send_and_receive: could not create Unix domain socket: %s", strerror(errno));
+		return -1;
 	}
 
 	memset(&sun, 0, sizeof(sun));
@@ -67,57 +68,84 @@ static char *send_and_receive(private_pipe_provider_t *this, char *msg)
 	len = strlen(sun.sun_path) + sizeof(sun.sun_family);
 	if (connect(sock, (struct sockaddr *)&sun, len) == -1)
 	{
-		DBG1(DBG_NET, "could not connect to Unix domain socket at %s: %s", this->path, strerror(errno));
-		return NULL;
+		DBG1(DBG_NET, "pipe: send_and_receive: could not connect to Unix domain socket at %s: %s", this->path, strerror(errno));
+		return -1;
 	}
 
 	if (send(sock, msg, strlen(msg), 0) == -1)
 	{
-		DBG1(DBG_NET, "could not communicate with Unix domain socket at %s: %s", this->path, strerror(errno));
-		return NULL;
+		DBG1(DBG_NET, "pipe: send_and_receive: could not communicate with Unix domain socket at %s: %s", this->path, strerror(errno));
+		return -1;
+	}
+
+	*res = calloc(1, RECV_BUFSIZE);
+	if (*res == NULL)
+	{
+		DBG1(DBG_ENC, "pipe: send_and_receive: could not allocate memory: %s", strerror(errno));
+		return -1;
+	}
+
+	if (recv(sock, *res, RECV_BUFSIZE, 0) == -1)
+	{
+		DBG1(DBG_NET, "pipe: send_and_receive: recv failed: %s", strerror(errno));
+		return -1;
 	}
 
 	close(sock);
 
-	asprintf(&res, "RESPONSE");
+	if (strcmp(*res, "ERROR") == 0)
+	{
+		free(res);
+		*res = NULL;
+		return -1;
+	}
 
-	return res;
+	return 0;
+}
+
+static const char *get_proto(host_t *host)
+{
+	int af = host->get_family(host);
+	switch (af) {
+		case AF_INET:
+			return "IPv4";
+		case AF_INET6:
+			return "IPv6";
+		default:
+			DBG1(DBG_ENC, "pipe: get_proto: unknown protocol family %d", af);
+			return NULL;
+	}
 }
 
 static host_t *acquire(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *requested)
 {
-	char *proto = NULL;
 	char *msg = NULL;
 	char *res = NULL;
 
-	switch (requested->get_family(requested)) {
-		case AF_INET:
-			proto = "IPv4";
-			break;
-		case AF_INET6:
-			proto = "IPv6";
-			break;
-		default:
-			return NULL;
+	const char *proto = get_proto(requested);
+	if (!proto)
+	{
+		return NULL;
 	}
 
 	if (asprintf(&msg, "ACQUIRE %Y %s\n", ike_sa->get_other_eap_id(ike_sa), proto) == -1)
 	{
-		DBG1(DBG_ENC, "could not create message for Unix domain socket: %s", strerror(errno));
+		DBG1(DBG_ENC, "pipe: acquire: could not create message for Unix domain socket: %s", strerror(errno));
 		return NULL;
 	}
 
-	res = send_and_receive(this, msg);
+	int rv = send_and_receive(this, msg, &res);
 	free(msg);
-	if (res == NULL)
+	if (rv == -1)
 	{
-		DBG1(DBG_NET, "could not communicate over Unix domain socket");
+		DBG1(DBG_NET, "pipe: acquire: could not communicate over Unix domain socket");
 		return NULL;
 	}
 
+	host_t *host = host_create_from_string(res, 0);
 	free(res);
 
-	return host_create_from_string("2a0a:4b00:1234::3", 0);
+	return host;
 }
 
 METHOD(attribute_provider_t, acquire_address, host_t*,
@@ -127,7 +155,6 @@ METHOD(attribute_provider_t, acquire_address, host_t*,
 	enumerator_t *enumerator;
 	char *pool;
 	host_t *vip = NULL;
-	identification_t *id = ike_sa->get_other_eap_id(ike_sa);
 
 	enumerator = pools->create_enumerator(pools);
 	while (enumerator->enumerate(enumerator, &pool))
@@ -149,18 +176,43 @@ METHOD(attribute_provider_t, acquire_address, host_t*,
 	return vip;
 }
 
+static int release(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *address)
+{
+	char *msg = NULL;
+	char *res = NULL;
+
+	const char *proto = get_proto(address);
+	if (!proto)
+	{
+		return -1;
+	}
+
+	if (asprintf(&msg, "RELEASE %Y %s %H\n", ike_sa->get_other_eap_id(ike_sa), proto, address) == -1)
+	{
+		DBG1(DBG_ENC, "pipe: release: could not create message for Unix domain socket: %s", strerror(errno));
+		return -1;
+	}
+
+	int rv = send_and_receive(this, msg, &res);
+	if (rv == -1)
+	{
+		DBG1(DBG_NET, "pipe: release: could not communicate over Unix domain socket");
+		return -1;
+	}
+
+	free(res);
+
+	return 0;
+}
+
 METHOD(attribute_provider_t, release_address, bool,
 	private_pipe_provider_t *this, linked_list_t *pools,
 	host_t *address, ike_sa_t *ike_sa)
 {
 	enumerator_t *enumerator;
-	//identification_t *id;
 	bool found = FALSE;
 	char *pool;
 
-	DBG1(DBG_CFG, "pipe: release: enter");
-
-	//id = ike_sa->get_other_eap_id(ike_sa);
 	enumerator = pools->create_enumerator(pools);
 	while (enumerator->enumerate(enumerator, &pool))
 	{
@@ -168,51 +220,90 @@ METHOD(attribute_provider_t, release_address, bool,
 		{
 			continue;
 		}
-		DBG1(DBG_CFG, "pipe: release: communicate");
-		/* TODO: socket comm */
-		if (TRUE/* TODO: address acquired from pipe */)
+
+		int rv = release(this, ike_sa, address);
+		if (rv != -1)
 		{
-			/* TODO: socket comm */
 			found = TRUE;
 			break;
 		}
 	}
 	enumerator->destroy(enumerator);
-	DBG1(DBG_CFG, "pipe: release: leave");
 	return found;
 }
 
-static linked_list_t *get_attr(private_pipe_provider_t *this, ike_sa_t *ike_sa)
+static linked_list_t *attr(private_pipe_provider_t *this, ike_sa_t *ike_sa)
 {
 	char *msg = NULL;
 	char *res = NULL;
-	char *tmp = NULL;
+	int rv;
 
 	if (asprintf(&msg, "ATTR %Y\n", ike_sa->get_other_eap_id(ike_sa)) == -1)
 	{
-		DBG1(DBG_ENC, "could not create message for Unix domain socket: %s", strerror(errno));
+		DBG1(DBG_ENC, "pipe: attr: could not create message for Unix domain socket: %s", strerror(errno));
 		return NULL;
 	}
 
-	res = send_and_receive(this, msg);
+	rv = send_and_receive(this, msg, &res);
 	free(msg);
-	if (res == NULL)
+	if (rv == -1)
 	{
-		DBG1(DBG_NET, "could not communicate over Unix domain socket");
+		DBG1(DBG_NET, "pipe: attr: could not communicate over Unix domain socket");
 		return NULL;
 	}
-
-	free(res);
 
 	linked_list_t *attributes = linked_list_create();
+	enumerator_t *enumerator = enumerator_create_token(res, " ", " ");
+	char *token;
+	bool is_type = TRUE;
+	attribute_entry_t *entry = NULL;
+	while (enumerator->enumerate(enumerator, &token))
+	{
+		bool skip = FALSE;
 
-	host_t *dns = host_create_from_string("2a0a:4b00:1234::1", 0);
-	attribute_entry_t *entry;
-	INIT(entry,
-		.type = INTERNAL_IP6_DNS,
-		.data = dns->get_address(dns),
-	);
-	attributes->insert_last(attributes, entry);
+		if (is_type) {
+			configuration_attribute_type_t type;
+			if (strcmp(token, "DNS4") == 0) {
+				type = INTERNAL_IP4_DNS;
+			} else if (strcmp(token, "DNS6") == 0) {
+				type = INTERNAL_IP6_DNS;
+			} else {
+				DBG1(DBG_ENC, "pipe: attr: unknown attribute type %s", token);
+				skip = TRUE;
+			}
+
+			if (!skip) {
+				INIT(entry,
+					.type = type,
+					.data = NULL,
+				);
+			}
+		} else {
+			chunk_t data;
+			switch (entry->type) {
+				case INTERNAL_IP4_DNS:
+				case INTERNAL_IP6_DNS:
+					{
+					host_t *host = host_create_from_string(token, 0);
+					data = host->get_address(host);
+					break;
+					}
+				default:
+					DBG1(DBG_ENC, "pipe: attr: skipping setting data for unknown attribute");
+					skip = true;
+					break;
+			}
+
+			if (!skip) {
+				entry->data = data;
+
+				attributes->insert_last(attributes, entry);
+			}
+		}
+		is_type = !is_type;
+	}
+	enumerator->destroy(enumerator);
+	free(res);
 
 	return attributes;
 }
@@ -221,8 +312,7 @@ METHOD(attribute_provider_t, create_attribute_enumerator, enumerator_t*,
 	private_pipe_provider_t *this, linked_list_t *pools, ike_sa_t *ike_sa,
 	linked_list_t *vips)
 {
-
-	linked_list_t *attributes = get_attr(this, ike_sa);
+	linked_list_t *attributes = attr(this, ike_sa);
 	return attributes ? attributes->create_enumerator(attributes) : NULL;
 }
 
