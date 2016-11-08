@@ -169,14 +169,15 @@ static host_t *acquire(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *
 	}
 
 	char *hex = get_serial(ike_sa);
-	if (asprintf(&msg, "ACQUIRE %s %Y 0x%s\n", proto, ike_sa->get_other_eap_id(ike_sa), hex) == -1)
+	int rv = asprintf(&msg, "ACQUIRE %s %Y 0x%s\n", proto, ike_sa->get_other_eap_id(ike_sa), hex);
+	free(hex);
+	if (rv == -1)
 	{
 		DBG1(DBG_ENC, "pipe: acquire: could not create message for Unix domain socket: %s", strerror(errno));
 		return NULL;
 	}
-	free(hex);
 
-	int rv = send_and_receive(this, msg, &res);
+	rv = send_and_receive(this, msg, &res);
 	free(msg);
 	if (rv == -1)
 	{
