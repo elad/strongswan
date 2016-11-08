@@ -13,8 +13,7 @@ endif
 
 libstrongswan_pipe_la_SOURCES = \
 	pipe_plugin.h pipe_plugin.c \
-	pipe_provider.h pipe_provider.c #\
-	#dhcp_socket.h dhcp_socket.c \
-	#dhcp_transaction.h dhcp_transaction.c
+	pipe_provider.h pipe_provider.c \
+	pipe_impl.h pipe_impl.c
 
 libstrongswan_pipe_la_LDFLAGS = -module -avoid-version
