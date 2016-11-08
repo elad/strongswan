@@ -173,7 +173,7 @@ static host_t *acquire(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *
 	free(hex);
 	if (rv == -1)
 	{
-		DBG1(DBG_ENC, "pipe: acquire: could not create message for Unix domain socket: %s", strerror(errno));
+		DBG1(DBG_ENC, "pipe: acquire: asprintf failed: %s", strerror(errno));
 		return NULL;
 	}
 
@@ -181,7 +181,7 @@ static host_t *acquire(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *
 	free(msg);
 	if (rv == -1)
 	{
-		DBG1(DBG_NET, "pipe: acquire: could not communicate over Unix domain socket");
+		DBG1(DBG_NET, "pipe: acquire: send_and_receive failed");
 		return NULL;
 	}
 
