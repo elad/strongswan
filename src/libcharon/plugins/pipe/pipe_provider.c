@@ -237,6 +237,7 @@ static int release(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *addr
 	}
 
 	int rv = send_and_receive(this, msg, &res);
+	free(msg);
 	if (rv == -1)
 	{
 		DBG1(DBG_NET, "pipe: release: send_and_receive failed");
