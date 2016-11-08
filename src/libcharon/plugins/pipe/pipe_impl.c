@@ -109,7 +109,7 @@ static const char *get_proto(host_t *host)
 	}
 }
 
-static char *get_serial(ike_sa_t *ike_sa)
+static int get_serial(ike_sa_t *ike_sa, chunk_t *serial)
 {
 	x509_t *x509 = NULL;
 	enumerator_t *cfgs = ike_sa->create_auth_cfg_enumerator(ike_sa, FALSE);
@@ -133,11 +133,10 @@ static char *get_serial(ike_sa_t *ike_sa)
 	if (!x509)
 	{
 		DBG1(DBG_ENC, "pipe: get_serial: could not find subject x509 certificate");
-		return NULL;
+		return -1;
 	}
-	chunk_t serial = chunk_skip_zero(x509->get_serial(x509));
-	chunk_t hex = chunk_to_hex(serial, NULL, FALSE);
-	return hex.ptr;
+	*serial = chunk_skip_zero(x509->get_serial(x509));
+	return 0;
 }
 
 host_t *acquire(char *path, ike_sa_t *ike_sa, host_t *requested)
@@ -151,9 +150,13 @@ host_t *acquire(char *path, ike_sa_t *ike_sa, host_t *requested)
 		return NULL;
 	}
 
-	char *hex = get_serial(ike_sa);
-	int rv = asprintf(&msg, "ACQUIRE %s %Y 0x%s\n", proto, ike_sa->get_other_eap_id(ike_sa), hex);
-	free(hex);
+	chunk_t serial;
+	if (get_serial(ike_sa, &serial) == -1)
+	{
+		return NULL;
+	}
+	int rv = asprintf(&msg, "ACQUIRE %s %Y %#B\n", proto, ike_sa->get_other_eap_id(ike_sa), &serial);
+	free(serial.ptr);
 	if (rv == -1)
 	{
 		DBG1(DBG_ENC, "pipe: acquire: asprintf failed: %s", strerror(errno));
