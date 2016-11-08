@@ -70,12 +70,14 @@ static int send_and_receive(private_pipe_provider_t *this, char *msg, char **res
 	if (connect(sock, (struct sockaddr *)&sun, len) == -1)
 	{
 		DBG1(DBG_NET, "pipe: send_and_receive: connect failed: %s", strerror(errno));
+		(void)close(sock);
 		return -1;
 	}
 
 	if (send(sock, msg, strlen(msg), 0) == -1)
 	{
 		DBG1(DBG_NET, "pipe: send_and_receive: send failed: %s", strerror(errno));
+		(void)close(sock);
 		return -1;
 	}
 
@@ -83,12 +85,15 @@ static int send_and_receive(private_pipe_provider_t *this, char *msg, char **res
 	if (*res == NULL)
 	{
 		DBG1(DBG_ENC, "pipe: send_and_receive: calloc failed: %s", strerror(errno));
+		(void)close(sock);
 		return -1;
 	}
 
 	if (recv(sock, *res, RECV_BUFSIZE, 0) == -1)
 	{
 		DBG1(DBG_NET, "pipe: send_and_receive: recv failed: %s", strerror(errno));
+		free(*res);
+		(void)close(sock);
 		return -1;
 	}
 
@@ -99,7 +104,7 @@ static int send_and_receive(private_pipe_provider_t *this, char *msg, char **res
 
 	if (strcmp(*res, "ERROR") == 0)
 	{
-		free(res);
+		free(*res);
 		*res = NULL;
 		return -1;
 	}
