@@ -59,7 +59,7 @@ static int send_and_receive(private_pipe_provider_t *this, char *msg, char **res
 	sock = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (sock == -1)
 	{
-		DBG1(DBG_NET, "pipe: send_and_receive: could not create Unix domain socket: %s", strerror(errno));
+		DBG1(DBG_NET, "pipe: send_and_receive: socket failed: %s", strerror(errno));
 		return -1;
 	}
 
@@ -69,20 +69,20 @@ static int send_and_receive(private_pipe_provider_t *this, char *msg, char **res
 	len = strlen(sun.sun_path) + sizeof(sun.sun_family);
 	if (connect(sock, (struct sockaddr *)&sun, len) == -1)
 	{
-		DBG1(DBG_NET, "pipe: send_and_receive: could not connect to Unix domain socket at %s: %s", this->path, strerror(errno));
+		DBG1(DBG_NET, "pipe: send_and_receive: connect failed: %s", strerror(errno));
 		return -1;
 	}
 
 	if (send(sock, msg, strlen(msg), 0) == -1)
 	{
-		DBG1(DBG_NET, "pipe: send_and_receive: could not communicate with Unix domain socket at %s: %s", this->path, strerror(errno));
+		DBG1(DBG_NET, "pipe: send_and_receive: send failed: %s", strerror(errno));
 		return -1;
 	}
 
 	*res = calloc(1, RECV_BUFSIZE);
 	if (*res == NULL)
 	{
-		DBG1(DBG_ENC, "pipe: send_and_receive: could not allocate memory: %s", strerror(errno));
+		DBG1(DBG_ENC, "pipe: send_and_receive: calloc failed: %s", strerror(errno));
 		return -1;
 	}
 
@@ -92,7 +92,10 @@ static int send_and_receive(private_pipe_provider_t *this, char *msg, char **res
 		return -1;
 	}
 
-	close(sock);
+	if (close(sock) == -1)
+	{
+		DBG1(DBG_NET, "pipe: send_and_receive: close failed: %s", strerror(errno));
+	}
 
 	if (strcmp(*res, "ERROR") == 0)
 	{
@@ -113,23 +116,14 @@ static const char *get_proto(host_t *host)
 		case AF_INET6:
 			return "IPv6";
 		default:
-			DBG1(DBG_ENC, "pipe: get_proto: unknown protocol family %d", af);
+			DBG1(DBG_ENC, "pipe: get_proto: unknown protocol family: %d", af);
 			return NULL;
 	}
 }
 
-static host_t *acquire(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *requested)
+static char *get_serial(ike_sa_t *ike_sa)
 {
-	char *msg = NULL;
-	char *res = NULL;
-	x509_t *x509 = NULL;
-
-	const char *proto = get_proto(requested);
-	if (!proto)
-	{
-		return NULL;
-	}
-
+	x509_t *x509;
 	enumerator_t *cfgs = ike_sa->create_auth_cfg_enumerator(ike_sa, FALSE);
 	auth_cfg_t *auth;
 	while (cfgs->enumerate(cfgs, &auth))
@@ -150,16 +144,32 @@ static host_t *acquire(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *
 	cfgs->destroy(cfgs);
 	if (!x509)
 	{
-		DBG1(DBG_ENC, "pipe: acquire: could not find subject x509 certificate");
+		DBG1(DBG_ENC, "pipe: get_serial: could not find subject x509 certificate");
 		return NULL;
 	}
 	chunk_t serial = chunk_skip_zero(x509->get_serial(x509));
+	chunk_t hex = chunk_to_hex(serial, NULL, FALSE);
+	return hex.ptr;
+}
 
-	if (asprintf(&msg, "ACQUIRE %s %Y %#B\n", proto, ike_sa->get_other_eap_id(ike_sa), &serial) == -1)
+static host_t *acquire(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *requested)
+{
+	char *msg = NULL;
+	char *res = NULL;
+
+	const char *proto = get_proto(requested);
+	if (!proto)
+	{
+		return NULL;
+	}
+
+	char *hex = get_serial(ike_sa);
+	if (asprintf(&msg, "ACQUIRE %s %Y 0x%s\n", proto, ike_sa->get_other_eap_id(ike_sa), hex) == -1)
 	{
 		DBG1(DBG_ENC, "pipe: acquire: could not create message for Unix domain socket: %s", strerror(errno));
 		return NULL;
 	}
+	free(hex);
 
 	int rv = send_and_receive(this, msg, &res);
 	free(msg);
@@ -216,14 +226,14 @@ static int release(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *addr
 
 	if (asprintf(&msg, "RELEASE %s %Y %H\n", proto, ike_sa->get_other_eap_id(ike_sa), address) == -1)
 	{
-		DBG1(DBG_ENC, "pipe: release: could not create message for Unix domain socket: %s", strerror(errno));
+		DBG1(DBG_ENC, "pipe: release: asprintf failed: %s", strerror(errno));
 		return -1;
 	}
 
 	int rv = send_and_receive(this, msg, &res);
 	if (rv == -1)
 	{
-		DBG1(DBG_NET, "pipe: release: could not communicate over Unix domain socket");
+		DBG1(DBG_NET, "pipe: release: send_and_receive failed");
 		return -1;
 	}
 
@@ -267,7 +277,7 @@ static linked_list_t *attr(private_pipe_provider_t *this, ike_sa_t *ike_sa)
 
 	if (asprintf(&msg, "ATTR %Y\n", ike_sa->get_other_eap_id(ike_sa)) == -1)
 	{
-		DBG1(DBG_ENC, "pipe: attr: could not create message for Unix domain socket: %s", strerror(errno));
+		DBG1(DBG_ENC, "pipe: attr: asprintf failed: %s", strerror(errno));
 		return NULL;
 	}
 
@@ -275,7 +285,7 @@ static linked_list_t *attr(private_pipe_provider_t *this, ike_sa_t *ike_sa)
 	free(msg);
 	if (rv == -1)
 	{
-		DBG1(DBG_NET, "pipe: attr: could not communicate over Unix domain socket");
+		DBG1(DBG_NET, "pipe: attr: send_and_receive failed");
 		return NULL;
 	}
 
@@ -295,7 +305,7 @@ static linked_list_t *attr(private_pipe_provider_t *this, ike_sa_t *ike_sa)
 			} else if (strcmp(token, "DNS6") == 0) {
 				type = INTERNAL_IP6_DNS;
 			} else {
-				DBG1(DBG_ENC, "pipe: attr: unknown attribute type %s", token);
+				DBG1(DBG_ENC, "pipe: attr: unknown attribute type: %s", token);
 				skip = TRUE;
 			}
 
@@ -369,7 +379,7 @@ pipe_provider_t *pipe_provider_create()
 
 	if (this->path == NULL)
 	{
-		DBG1(DBG_CFG, "configured Unix domain socket path invalid");
+		DBG1(DBG_CFG, "invalid Unix domain socket path");
 		destroy(this);
 		return NULL;
 	}
