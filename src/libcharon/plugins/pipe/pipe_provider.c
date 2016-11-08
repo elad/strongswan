@@ -128,7 +128,7 @@ static const char *get_proto(host_t *host)
 
 static char *get_serial(ike_sa_t *ike_sa)
 {
-	x509_t *x509;
+	x509_t *x509 = NULL;
 	enumerator_t *cfgs = ike_sa->create_auth_cfg_enumerator(ike_sa, FALSE);
 	auth_cfg_t *auth;
 	while (cfgs->enumerate(cfgs, &auth))
