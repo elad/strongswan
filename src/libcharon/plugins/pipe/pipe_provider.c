@@ -22,6 +22,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <credentials/certificates/x509.h>
 
 #define	RECV_BUFSIZE	(1024)
 
@@ -121,6 +122,7 @@ static host_t *acquire(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *
 {
 	char *msg = NULL;
 	char *res = NULL;
+	x509_t *x509 = NULL;
 
 	const char *proto = get_proto(requested);
 	if (!proto)
@@ -128,7 +130,32 @@ static host_t *acquire(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *
 		return NULL;
 	}
 
-	if (asprintf(&msg, "ACQUIRE %Y %s\n", ike_sa->get_other_eap_id(ike_sa), proto) == -1)
+	enumerator_t *cfgs = ike_sa->create_auth_cfg_enumerator(ike_sa, FALSE);
+	auth_cfg_t *auth;
+	while (cfgs->enumerate(cfgs, &auth))
+	{
+		enumerator_t *items = auth->create_enumerator(auth);
+		certificate_t *cert;
+		auth_rule_t type;
+		while (items->enumerate(items, &type, &cert))
+		{
+			if (type == AUTH_RULE_SUBJECT_CERT && cert->get_type(cert) == CERT_X509)
+			{
+				x509 = (x509_t*)cert;
+				break;
+			}
+		}
+		items->destroy(items);
+	}
+	cfgs->destroy(cfgs);
+	if (!x509)
+	{
+		DBG1(DBG_ENC, "pipe: acquire: could not find subject x509 certificate");
+		return NULL;
+	}
+	chunk_t serial = chunk_skip_zero(x509->get_serial(x509));
+
+	if (asprintf(&msg, "ACQUIRE %s %Y %#B\n", proto, ike_sa->get_other_eap_id(ike_sa), &serial) == -1)
 	{
 		DBG1(DBG_ENC, "pipe: acquire: could not create message for Unix domain socket: %s", strerror(errno));
 		return NULL;
@@ -187,7 +214,7 @@ static int release(private_pipe_provider_t *this, ike_sa_t *ike_sa, host_t *addr
 		return -1;
 	}
 
-	if (asprintf(&msg, "RELEASE %Y %s %H\n", ike_sa->get_other_eap_id(ike_sa), proto, address) == -1)
+	if (asprintf(&msg, "RELEASE %s %Y %H\n", proto, ike_sa->get_other_eap_id(ike_sa), address) == -1)
 	{
 		DBG1(DBG_ENC, "pipe: release: could not create message for Unix domain socket: %s", strerror(errno));
 		return -1;
