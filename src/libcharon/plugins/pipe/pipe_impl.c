@@ -109,7 +109,7 @@ static const char *get_proto(host_t *host)
 	}
 }
 
-static int get_serial(ike_sa_t *ike_sa, chunk_t *serial)
+static x509_t *get_x509(ike_sa_t *ike_sa)
 {
 	x509_t *x509 = NULL;
 	enumerator_t *cfgs = ike_sa->create_auth_cfg_enumerator(ike_sa, FALSE);
@@ -132,11 +132,47 @@ static int get_serial(ike_sa_t *ike_sa, chunk_t *serial)
 	cfgs->destroy(cfgs);
 	if (!x509)
 	{
-		DBG1(DBG_ENC, "pipe: get_serial: could not find subject x509 certificate");
-		return -1;
+		DBG1(DBG_ENC, "pipe: get_x509: could not find subject x509 certificate");
 	}
-	*serial = chunk_skip_zero(x509->get_serial(x509));
-	return 0;
+	return x509;
+}
+
+/* From http://stackoverflow.com/a/10347773 */
+static int ends_with(const char *str, const char *suffix)
+{
+  int str_len = strlen(str);
+  int suffix_len = strlen(suffix);
+  return (str_len >= suffix_len) && !strcmp(str + (str_len-suffix_len), suffix);
+}
+
+static identification_t *get_san(x509_t *x509)
+{
+	enumerator_t *sans;
+	identification_t *id;
+	sans = x509->create_subjectAltName_enumerator(x509);
+	while (sans->enumerate(sans, &id))
+	{
+		if (id->get_type(id) == ID_FQDN)
+		{
+			char *str;
+			if (asprintf(&str, "%Y", id) == -1)
+			{
+				DBG1(DBG_ENC, "pipe: get_san: asprintf failed: %s", strerror(errno));
+				sans->destroy(sans);
+				return NULL;
+			}
+			bool match = ends_with(str, ".client.nsof");
+			free(str);
+			if (match)
+			{
+				sans->destroy(sans);
+				return id;
+			}
+		}
+	}
+	sans->destroy(sans);
+
+	return NULL;
 }
 
 host_t *acquire(char *path, ike_sa_t *ike_sa, host_t *requested)
@@ -150,12 +186,14 @@ host_t *acquire(char *path, ike_sa_t *ike_sa, host_t *requested)
 		return NULL;
 	}
 
-	chunk_t serial;
-	if (get_serial(ike_sa, &serial) == -1)
+	x509_t *x509 = get_x509(ike_sa);
+	if (!x509)
 	{
 		return NULL;
 	}
-	int rv = asprintf(&msg, "ACQUIRE %s %Y %#B\n", proto, ike_sa->get_other_eap_id(ike_sa), &serial);
+	identification_t *san = get_san(x509);
+	chunk_t serial = chunk_skip_zero(x509->get_serial(x509));
+	int rv = asprintf(&msg, "ACQUIRE %s %Y %#B\n", proto, san, &serial);
 	free(serial.ptr);
 	if (rv == -1)
 	{
