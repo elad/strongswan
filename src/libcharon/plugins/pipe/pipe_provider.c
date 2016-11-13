@@ -111,8 +111,7 @@ METHOD(attribute_provider_t, create_attribute_enumerator, enumerator_t*,
 	private_pipe_provider_t *this, linked_list_t *pools, ike_sa_t *ike_sa,
 	linked_list_t *vips)
 {
-	linked_list_t *attributes = attr(this->path, ike_sa);
-	return attributes ? attributes->create_enumerator(attributes) : NULL;
+	return attr(this->path, ike_sa);
 }
 
 METHOD(pipe_provider_t, destroy, void, private_pipe_provider_t *this)

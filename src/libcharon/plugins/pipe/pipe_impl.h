@@ -23,6 +23,6 @@
 
 host_t *acquire(char *, ike_sa_t *, host_t *);
 int release(char *, ike_sa_t *, host_t *);
-linked_list_t *attr(char *, ike_sa_t *);
+enumerator_t *attr(char *, ike_sa_t *);
 
 #endif /** PIPE_IMPL_H_ @}*/

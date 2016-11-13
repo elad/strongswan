@@ -15,7 +15,8 @@
 
 #include "pipe_provider.h"
 
-#include <library.h>
+#define _GNU_SOURCE
+#include <stdio.h>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -245,7 +246,14 @@ int release(char *path, ike_sa_t *ike_sa, host_t *address)
 	return 0;
 }
 
-linked_list_t *attr(char *path, ike_sa_t *ike_sa)
+static bool attribute_filter(void *null, attribute_entry_t **entry, configuration_attribute_type_t *type, void **dummy, chunk_t *data)
+{
+	*type = (*entry)->type;
+	*data = (*entry)->data;
+	return TRUE;
+}
+
+enumerator_t *attr(char *path, ike_sa_t *ike_sa)
 {
 	char *msg = NULL;
 	char *res = NULL;
@@ -269,13 +277,12 @@ linked_list_t *attr(char *path, ike_sa_t *ike_sa)
 	enumerator_t *enumerator = enumerator_create_token(res, " ", " ");
 	char *token;
 	bool is_type = TRUE;
-	attribute_entry_t *entry = NULL;
+	configuration_attribute_type_t type = 0;
 	while (enumerator->enumerate(enumerator, &token))
 	{
 		bool skip = FALSE;
 
 		if (is_type) {
-			configuration_attribute_type_t type;
 			if (strcmp(token, "DNS4") == 0) {
 				type = INTERNAL_IP4_DNS;
 			} else if (strcmp(token, "DNS6") == 0) {
@@ -284,16 +291,9 @@ linked_list_t *attr(char *path, ike_sa_t *ike_sa)
 				DBG1(DBG_ENC, "pipe: attr: unknown attribute type: %s", token);
 				skip = TRUE;
 			}
-
-			if (!skip) {
-				INIT(entry,
-					.type = type,
-					.data = NULL,
-				);
-			}
 		} else {
 			chunk_t data;
-			switch (entry->type) {
+			switch (type) {
 				case INTERNAL_IP4_DNS:
 				case INTERNAL_IP6_DNS:
 					{
@@ -308,8 +308,11 @@ linked_list_t *attr(char *path, ike_sa_t *ike_sa)
 			}
 
 			if (!skip) {
-				entry->data = data;
-
+				attribute_entry_t *entry;
+				INIT(entry,
+					.type = type,
+					.data = chunk_clone(data),
+				);
 				attributes->insert_last(attributes, entry);
 			}
 		}
@@ -318,6 +321,6 @@ linked_list_t *attr(char *path, ike_sa_t *ike_sa)
 	enumerator->destroy(enumerator);
 	free(res);
 
-	return attributes;
+	return enumerator_create_filter(attributes->create_enumerator(attributes), (void *)attribute_filter, NULL, NULL);
 }
 
