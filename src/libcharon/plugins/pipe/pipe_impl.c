@@ -227,7 +227,13 @@ int release(char *path, ike_sa_t *ike_sa, host_t *address)
 		return -1;
 	}
 
-	if (asprintf(&msg, "RELEASE %s %Y %H\n", proto, ike_sa->get_other_eap_id(ike_sa), address) == -1)
+	x509_t *x509 = get_x509(ike_sa);
+	if (!x509)
+	{
+		return NULL;
+	}
+	identification_t *san = get_san(x509);
+	if (asprintf(&msg, "RELEASE %s %Y %H\n", proto, san, address) == -1)
 	{
 		DBG1(DBG_ENC, "pipe: release: asprintf failed: %s", strerror(errno));
 		return -1;
@@ -259,7 +265,13 @@ enumerator_t *attr(char *path, ike_sa_t *ike_sa)
 	char *res = NULL;
 	int rv;
 
-	if (asprintf(&msg, "ATTR %Y\n", ike_sa->get_other_eap_id(ike_sa)) == -1)
+	x509_t *x509 = get_x509(ike_sa);
+	if (!x509)
+	{
+		return NULL;
+	}
+	identification_t *san = get_san(x509);
+	if (asprintf(&msg, "ATTR %Y\n", san) == -1)
 	{
 		DBG1(DBG_ENC, "pipe: attr: asprintf failed: %s", strerror(errno));
 		return NULL;
