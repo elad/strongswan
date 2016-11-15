@@ -162,7 +162,7 @@ static identification_t *get_san(x509_t *x509)
 				sans->destroy(sans);
 				return NULL;
 			}
-			bool match = ends_with(str, ".client.nsof");
+			bool match = ends_with(str, ".nsof");
 			free(str);
 			if (match)
 			{
